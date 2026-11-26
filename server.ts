@@ -738,6 +738,10 @@ async function startServer(): Promise<void> {
     });
   });
 
+  app.get('/health', (_req, res) => {
+    res.json({ ok: true });
+  });
+
   // Montar Vite en desarrollo o archivos estáticos en producción
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');

@@ -1,26 +1,24 @@
-# Escalera en Vivo
+# LA ESCALERA DEL SABER
 
-Juego multijugador en tiempo real de Serpientes y Escaleras (30 casillas) para eventos y clases, con pantalla de proyección y controles en celular.
+Juego multijugador en tiempo real de Serpientes y Escaleras (30 casillas) para eventos y clases, con pantalla de proyección y controles en celular. **Sin base de datos ni `localStorage`.**
 
-## Rutas
+Creado por John Alexander Echeverry O.
 
-- `/` o `/proyeccion`: Pantalla del anfitrión para proyectar (tablero 6×5 de 30 casillas, código QR, ranking en vivo, panel "Va de primero", eventos y controles).
-- `/jugar`: Pantalla mobile-first para los jugadores desde su celular.
+## Publicar gratis en GitHub Pages (sin base de datos ni servidor externo)
 
-## Requisitos
+El proyecto incluye conexión automática **WebRTC P2P (`PeerJS`)** para funcionar 100% en GitHub Pages:
+1. Sube este repositorio a GitHub.
+2. En tu repositorio ve a **Settings → Pages → Build and deployment → Source: GitHub Actions** y crea el flujo desde la interfaz de GitHub usando `npm ci` y `npm run build:gh-pages` publicando la carpeta `./dist` (o compila con `vite build --base=./ --outDir docs` y selecciona la rama `main` carpeta `/docs`).
+3. Abre la página publicada para proyectarla: el código QR incluirá automáticamente `?vista=jugar&sala=XXXXXX` para que los celulares se conecten directo a la pantalla sin base de datos.
 
-- Node.js 22+ (ejecución nativa de `server.ts` en producción)
-
-## Desarrollo local
+## Modo servidor Node.js (Cloud Run, Render, Railway o local)
 
 ```bash
 npm install
 npm run dev
 ```
 
-Abre `http://localhost:3000` en el navegador para la pantalla de proyección. Si usas celulares en la misma red Wi-Fi, puedes editar la URL del QR desde el botón **Editar URL** e ingresar la IP local de tu computadora (por ejemplo, `http://192.168.1.50:3000/jugar`).
-
-## Producción (Render, Railway, Cloud Run, VPS)
+Para producción con servidor Express + Socket.io:
 
 ```bash
 npm install

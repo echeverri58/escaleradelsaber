@@ -30,6 +30,12 @@ import type {
   PublicGameState,
   PublicPlayer,
 } from '../shared/types.ts';
+import { createP2PHost, type P2PHostController } from '../utils/p2pHost.ts';
+import {
+  buildDefaultPlayerJoinUrl,
+  getInitialServerUrl,
+  isStaticGitHubPages,
+} from '../utils/socketConfig.ts';
 import { soundManager } from '../utils/sound.ts';
 import { GameBoard } from './GameBoard.tsx';
 
@@ -46,6 +52,8 @@ const INITIAL_STATE: PublicGameState = {
 
 export function ProjectionView() {
   const socketRef = useRef<Socket | null>(null);
+  const p2pHostRef = useRef<P2PHostController | null>(null);
+
   const [gameState, setGameState] = useState<PublicGameState>(INITIAL_STATE);
   const [muted, setMuted] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
@@ -54,10 +62,9 @@ export function ProjectionView() {
   const [bonusBanner, setBonusBanner] = useState<BonusBroadcastPayload | null>(null);
   const [recentMoverId, setRecentMoverId] = useState<string | null>(null);
 
-  const defaultJoinUrl = useMemo(() => {
-    if (typeof window === 'undefined') return '/jugar';
-    return `${window.location.origin}/jugar`;
-  }, []);
+  const [serverUrl] = useState<string>(() => getInitialServerUrl());
+  const [p2pRoomCode, setP2pRoomCode] = useState<string | null>(null);
+  const [p2pError, setP2pError] = useState<string | null>(null);
   const [customJoinUrl, setCustomJoinUrl] = useState<string>('');
   const [editingQrUrl, setEditingQrUrl] = useState(false);
 
@@ -67,64 +74,121 @@ export function ProjectionView() {
   const [questionsMode, setQuestionsMode] = useState<'append' | 'replace'>('append');
   const [questionsFeedback, setQuestionsFeedback] = useState<string | null>(null);
 
+  const defaultJoinUrl = useMemo(
+    () => buildDefaultPlayerJoinUrl(serverUrl, p2pRoomCode),
+    [serverUrl, p2pRoomCode]
+  );
   const joinUrl = customJoinUrl.trim() || defaultJoinUrl;
 
   const previewParsed = useMemo(() => parseCustomQuestions(customText), [customText]);
-
   const prevEventsTopIdRef = useRef<string | null>(null);
 
+  const handleStateUpdate = (nextState: PublicGameState) => {
+    setGameState(nextState);
+    const latest = nextState.events[0];
+    if (latest && latest.id !== prevEventsTopIdRef.current) {
+      prevEventsTopIdRef.current = latest.id;
+      if (latest.type === 'correct') soundManager.playCorrect();
+      if (latest.type === 'ladder') soundManager.playLadder();
+      if (latest.type === 'snake') soundManager.playSnake();
+    }
+  };
+
+  const handleBonus = (payload: BonusBroadcastPayload) => {
+    soundManager.playBonus();
+    setBonusBanner(payload);
+    setRecentMoverId(payload.playerId);
+    setTimeout(() => {
+      setBonusBanner((curr) => (curr?.playerId === payload.playerId ? null : curr));
+      setRecentMoverId((curr) => (curr === payload.playerId ? null : curr));
+    }, 3200);
+  };
+
+  const handleWinner = () => {
+    soundManager.playVictory();
+    const end = Date.now() + 2600;
+    const fire = () => {
+      confetti({
+        particleCount: 65,
+        spread: 75,
+        origin: { y: 0.55 },
+      });
+      if (Date.now() < end) {
+        requestAnimationFrame(fire);
+      }
+    };
+    fire();
+  };
+
   useEffect(() => {
-    const socket = io({ transports: ['websocket', 'polling'] });
+    let cleanedUp = false;
+
+    const startP2PMode = () => {
+      if (cleanedUp || p2pHostRef.current) return;
+      setP2pError(null);
+      p2pHostRef.current = createP2PHost({
+        onReady: (code) => {
+          if (!cleanedUp) setP2pRoomCode(code);
+        },
+        onStateUpdate: (state) => {
+          if (!cleanedUp) handleStateUpdate(state);
+        },
+        onBonus: (payload) => {
+          if (!cleanedUp) handleBonus(payload);
+        },
+        onWinner: () => {
+          if (!cleanedUp) handleWinner();
+        },
+        onError: (msg) => {
+          if (!cleanedUp) setP2pError(msg);
+        },
+      });
+    };
+
+    // En GitHub Pages (sitio estático sin servidor externo) iniciar directamente en modo P2P WebRTC
+    if (isStaticGitHubPages() && !serverUrl) {
+      startP2PMode();
+      return () => {
+        cleanedUp = true;
+        p2pHostRef.current?.destroy();
+        p2pHostRef.current = null;
+      };
+    }
+
+    // En servidor Node.js (Cloud Run, Render, Railway, local) usar Socket.io
+    let everConnected = false;
+    const socket = serverUrl
+      ? io(serverUrl, { transports: ['websocket', 'polling'], reconnectionAttempts: 2 })
+      : io({ transports: ['websocket', 'polling'], reconnectionAttempts: 2 });
     socketRef.current = socket;
 
     socket.on('connect', () => {
-      // Al cargar o recargar la pantalla de proyección, todo se borra y empieza desde cero
+      everConnected = true;
+      setP2pRoomCode(null);
       socket.emit('host_init');
     });
 
-    socket.on('state_update', (nextState: PublicGameState) => {
-      setGameState(nextState);
-
-      const latest = nextState.events[0];
-      if (latest && latest.id !== prevEventsTopIdRef.current) {
-        prevEventsTopIdRef.current = latest.id;
-        if (latest.type === 'correct') soundManager.playCorrect();
-        if (latest.type === 'ladder') soundManager.playLadder();
-        if (latest.type === 'snake') soundManager.playSnake();
+    // Si se desplegó como estático en otro hosting (Netlify/Vercel/etc.) sin servidor Socket.io, pasar a P2P WebRTC automáticamente
+    socket.on('connect_error', () => {
+      if (!everConnected && !serverUrl) {
+        socket.disconnect();
+        socketRef.current = null;
+        startP2PMode();
       }
     });
 
-    socket.on('bonus', (payload: BonusBroadcastPayload) => {
-      soundManager.playBonus();
-      setBonusBanner(payload);
-      setRecentMoverId(payload.playerId);
-      setTimeout(() => {
-        setBonusBanner((curr) => (curr?.playerId === payload.playerId ? null : curr));
-        setRecentMoverId((curr) => (curr === payload.playerId ? null : curr));
-      }, 3200);
-    });
-
-    socket.on('winner', () => {
-      soundManager.playVictory();
-      const end = Date.now() + 2600;
-      const fire = () => {
-        confetti({
-          particleCount: 65,
-          spread: 75,
-          origin: { y: 0.55 },
-        });
-        if (Date.now() < end) {
-          requestAnimationFrame(fire);
-        }
-      };
-      fire();
-    });
+    socket.on('state_update', handleStateUpdate);
+    socket.on('bonus', handleBonus);
+    socket.on('winner', handleWinner);
 
     return () => {
+      cleanedUp = true;
       socket.disconnect();
       socketRef.current = null;
+      p2pHostRef.current?.destroy();
+      p2pHostRef.current = null;
     };
-  }, []);
+  }, [serverUrl]);
 
   const toggleMute = () => {
     const next = !muted;
@@ -142,18 +206,30 @@ export function ProjectionView() {
     }
   };
 
-  const handleStart = () => socketRef.current?.emit('start');
+  const handleStart = () => {
+    if (p2pHostRef.current) p2pHostRef.current.start();
+    else socketRef.current?.emit('start');
+  };
+
   const handlePauseResume = () => {
+    if (p2pHostRef.current) {
+      if (gameState.status === 'PLAYING') p2pHostRef.current.pause();
+      else if (gameState.status === 'PAUSED') p2pHostRef.current.resume();
+      return;
+    }
     if (gameState.status === 'PLAYING') socketRef.current?.emit('pause');
     else if (gameState.status === 'PAUSED') socketRef.current?.emit('resume');
   };
 
   const handleToggleSnakes = () => {
-    socketRef.current?.emit('toggle_snakes', { enabled: !gameState.snakesEnabled });
+    const next = !gameState.snakesEnabled;
+    if (p2pHostRef.current) p2pHostRef.current.toggleSnakes(next);
+    else socketRef.current?.emit('toggle_snakes', { enabled: next });
   };
 
   const handleKick = (player: PublicPlayer) => {
-    socketRef.current?.emit('kick', { playerId: player.id });
+    if (p2pHostRef.current) p2pHostRef.current.kick(player.id);
+    else socketRef.current?.emit('kick', { playerId: player.id });
   };
 
   const handleResetAll = () => {
@@ -163,14 +239,31 @@ export function ProjectionView() {
       return;
     }
     setConfirmReset(false);
-    socketRef.current?.emit('reset');
+    if (p2pHostRef.current) p2pHostRef.current.reset();
+    else socketRef.current?.emit('reset');
   };
 
   const handlePlayAgain = () => {
-    socketRef.current?.emit('play_again');
+    if (p2pHostRef.current) p2pHostRef.current.playAgain();
+    else socketRef.current?.emit('play_again');
   };
 
   const handleSaveCustomQuestions = () => {
+    if (p2pHostRef.current) {
+      const res = p2pHostRef.current.setCustomQuestions(customText, questionsMode);
+      if (!res.ok) {
+        setQuestionsFeedback(res.error ?? 'No se pudieron cargar las preguntas.');
+        return;
+      }
+      setQuestionsFeedback(`Listo: se cargaron ${res.added} preguntas (total activo: ${res.total}).`);
+      setCustomText('');
+      setTimeout(() => {
+        setQuestionsModalOpen(false);
+        setQuestionsFeedback(null);
+      }, 1200);
+      return;
+    }
+
     socketRef.current?.emit(
       'custom_questions',
       { rawText: customText, mode: questionsMode },
@@ -179,9 +272,7 @@ export function ProjectionView() {
           setQuestionsFeedback(res.error ?? 'No se pudieron cargar las preguntas.');
           return;
         }
-        setQuestionsFeedback(
-          `Listo: se cargaron ${res.added} preguntas (total activo: ${res.total}).`
-        );
+        setQuestionsFeedback(`Listo: se cargaron ${res.added} preguntas (total activo: ${res.total}).`);
         setCustomText('');
         setTimeout(() => {
           setQuestionsModalOpen(false);
@@ -192,7 +283,8 @@ export function ProjectionView() {
   };
 
   const handleRestoreDefaults = () => {
-    socketRef.current?.emit('restore_default_questions');
+    if (p2pHostRef.current) p2pHostRef.current.restoreDefaultQuestions();
+    else socketRef.current?.emit('restore_default_questions');
     setQuestionsFeedback('Banco restaurado a las 30 preguntas iniciales.');
     setTimeout(() => setQuestionsFeedback(null), 1600);
   };
@@ -236,6 +328,12 @@ export function ProjectionView() {
             <span className="tabular-nums">{MAX_SQUARE} casillas</span>
             <span aria-hidden="true">·</span>
             <span className="tabular-nums">{gameState.totalQuestions} preguntas</span>
+            {p2pRoomCode && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="font-mono text-sky-300">Sala {p2pRoomCode}</span>
+              </>
+            )}
           </div>
         </div>
 
@@ -324,6 +422,12 @@ export function ProjectionView() {
           </button>
         </div>
       </header>
+
+      {p2pError && (
+        <div className="bg-rose-500/15 border-b border-rose-400/30 px-5 py-2 text-xs text-rose-200 shrink-0">
+          Aviso de conexión P2P: {p2pError}. Recarga la página si los celulares no logran conectar.
+        </div>
+      )}
 
       {/* Área principal: Tablero 6x5 (30 casillas) a la izquierda + Panel derecho */}
       <main className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[1fr_400px] xl:grid-cols-[1fr_430px] gap-4 p-4">

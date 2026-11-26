@@ -23,10 +23,11 @@ import type {
   PublicGameState,
   PublicPlayer,
 } from '../shared/types.ts';
+import { createP2PClient, type P2PClientController } from '../utils/p2pClient.ts';
+import { getInitialServerUrl, getRoomCodeFromUrl } from '../utils/socketConfig.ts';
 import { soundManager } from '../utils/sound.ts';
 
 function DiceFace({ value }: { value: number }) {
-  // Posiciones de puntos en una cuadrícula 3x3 para caras 1..6
   const pipMap: Record<number, number[]> = {
     1: [4],
     2: [2, 6],
@@ -55,8 +56,13 @@ function DiceFace({ value }: { value: number }) {
 
 export function PlayerView() {
   const socketRef = useRef<Socket | null>(null);
+  const p2pClientRef = useRef<P2PClientController | null>(null);
   const playerIdRef = useRef<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const [roomCode] = useState<string>(() => getRoomCodeFromUrl());
+  const [p2pReady, setP2pReady] = useState<boolean>(() => !getRoomCodeFromUrl());
+  const [connectionError, setConnectionError] = useState<string | null>(null);
 
   const [nameInput, setNameInput] = useState('');
   const [joinError, setJoinError] = useState<string | null>(null);
@@ -73,11 +79,118 @@ export function PlayerView() {
   const [muted, setMuted] = useState(false);
 
   useEffect(() => {
-    const socket = io({ transports: ['websocket', 'polling'] });
+    const onStateUpdate = (nextState: PublicGameState) => {
+      setGameState(nextState);
+      if (playerIdRef.current) {
+        const updatedMe = nextState.players.find((p) => p.id === playerIdRef.current);
+        if (updatedMe) {
+          setMe(updatedMe);
+        }
+      }
+    };
+
+    const onQuestion = (q: ClientQuestion) => {
+      setFeedback(null);
+      setAnswerText('');
+      setSubmitError(null);
+      setSubmitting(false);
+      setCurrentQuestion(q);
+      setTimeout(() => inputRef.current?.focus(), 60);
+    };
+
+    const onAnswerResult = (res: AnswerResultPayload) => {
+      setSubmitting(false);
+      setFeedback(res);
+
+      if (res.correct) {
+        if (res.bonusTriggered) soundManager.playBonus();
+        else if (res.boardTransition === 'ladder') soundManager.playLadder();
+        else if (res.boardTransition === 'snake') soundManager.playSnake();
+        else soundManager.playCorrect();
+      } else {
+        soundManager.playWrong();
+      }
+    };
+
+    const onWinner = (payload: { winner: PublicPlayer }) => {
+      if (payload.winner.id === playerIdRef.current) {
+        soundManager.playVictory();
+        confetti({ particleCount: 90, spread: 75, origin: { y: 0.6 } });
+      }
+    };
+
+    const onPlayAgain = () => {
+      setFeedback(null);
+      setCurrentQuestion(null);
+      setAnswerText('');
+      setSubmitError(null);
+    };
+
+    const onKicked = () => {
+      playerIdRef.current = null;
+      setMe(null);
+      setCurrentQuestion(null);
+      setFeedback(null);
+      setNoticeBanner('Fuiste expulsado de la partida por el anfitrión.');
+    };
+
+    const onReset = () => {
+      playerIdRef.current = null;
+      setMe(null);
+      setCurrentQuestion(null);
+      setFeedback(null);
+      setAnswerText('');
+      setNoticeBanner('El anfitrión reinició el juego. Ingresa tu nombre para volver a jugar.');
+    };
+
+    // Modo P2P WebRTC (cuando viene ?sala=XXXXXX desde GitHub Pages)
+    if (roomCode) {
+      const client = createP2PClient(roomCode, {
+        onOpen: () => {
+          setP2pReady(true);
+          setConnectionError(null);
+          if (playerIdRef.current) {
+            client.reconnectPlayer(playerIdRef.current, (res) => {
+              if (res.ok && res.data) {
+                setMe(res.data.player);
+                setGameState(res.data.gameState);
+                if (res.data.currentQuestion) setCurrentQuestion(res.data.currentQuestion);
+              } else {
+                playerIdRef.current = null;
+                setMe(null);
+              }
+            });
+          }
+        },
+        onStateUpdate,
+        onQuestion,
+        onAnswerResult,
+        onWinner,
+        onPlayAgain,
+        onKicked,
+        onReset,
+        onError: (msg) => {
+          setConnectionError(msg);
+          setJoining(false);
+        },
+      });
+      p2pClientRef.current = client;
+
+      return () => {
+        client.destroy();
+        p2pClientRef.current = null;
+      };
+    }
+
+    // Modo Socket.io (servidor Node.js local / Render / Railway / Cloud Run)
+    const serverUrl = getInitialServerUrl();
+    const socket = serverUrl
+      ? io(serverUrl, { transports: ['websocket', 'polling'] })
+      : io({ transports: ['websocket', 'polling'] });
     socketRef.current = socket;
 
     socket.on('connect', () => {
-      // Si hubo microcorte de red sin recargar la página, recuperar sesión en memoria
+      setConnectionError(null);
       if (playerIdRef.current) {
         socket.emit(
           'reconnect_player',
@@ -98,75 +211,19 @@ export function PlayerView() {
       }
     });
 
-    socket.on('state_update', (nextState: PublicGameState) => {
-      setGameState(nextState);
-      if (playerIdRef.current) {
-        const updatedMe = nextState.players.find((p) => p.id === playerIdRef.current);
-        if (updatedMe) {
-          setMe(updatedMe);
-        }
-      }
-    });
-
-    socket.on('question', (q: ClientQuestion) => {
-      setFeedback(null);
-      setAnswerText('');
-      setSubmitError(null);
-      setSubmitting(false);
-      setCurrentQuestion(q);
-      setTimeout(() => inputRef.current?.focus(), 60);
-    });
-
-    socket.on('answer_result', (res: AnswerResultPayload) => {
-      setSubmitting(false);
-      setFeedback(res);
-
-      if (res.correct) {
-        if (res.bonusTriggered) soundManager.playBonus();
-        else if (res.boardTransition === 'ladder') soundManager.playLadder();
-        else if (res.boardTransition === 'snake') soundManager.playSnake();
-        else soundManager.playCorrect();
-      } else {
-        soundManager.playWrong();
-      }
-    });
-
-    socket.on('winner', (payload: { winner: PublicPlayer }) => {
-      if (payload.winner.id === playerIdRef.current) {
-        soundManager.playVictory();
-        confetti({ particleCount: 90, spread: 75, origin: { y: 0.6 } });
-      }
-    });
-
-    socket.on('play_again', () => {
-      setFeedback(null);
-      setCurrentQuestion(null);
-      setAnswerText('');
-      setSubmitError(null);
-    });
-
-    socket.on('kicked', () => {
-      playerIdRef.current = null;
-      setMe(null);
-      setCurrentQuestion(null);
-      setFeedback(null);
-      setNoticeBanner('Fuiste expulsado de la partida por el anfitrión.');
-    });
-
-    socket.on('reset', () => {
-      playerIdRef.current = null;
-      setMe(null);
-      setCurrentQuestion(null);
-      setFeedback(null);
-      setAnswerText('');
-      setNoticeBanner('El anfitrión reinició el juego. Ingresa tu nombre para volver a jugar.');
-    });
+    socket.on('state_update', onStateUpdate);
+    socket.on('question', onQuestion);
+    socket.on('answer_result', onAnswerResult);
+    socket.on('winner', onWinner);
+    socket.on('play_again', onPlayAgain);
+    socket.on('kicked', onKicked);
+    socket.on('reset', onReset);
 
     return () => {
       socket.disconnect();
       socketRef.current = null;
     };
-  }, []);
+  }, [roomCode]);
 
   const toggleMute = () => {
     const next = !muted;
@@ -190,21 +247,23 @@ export function PlayerView() {
     setJoinError(null);
     setNoticeBanner(null);
 
-    socketRef.current?.emit(
-      'join',
-      { name: trimmed },
-      (res: { ok: boolean; error?: string; data?: JoinSuccessPayload }) => {
-        setJoining(false);
-        if (!res.ok || !res.data) {
-          setJoinError(res.error ?? 'No se pudo entrar al juego.');
-          return;
-        }
-        playerIdRef.current = res.data.player.id;
-        setMe(res.data.player);
-        setGameState(res.data.gameState);
-        setCurrentQuestion(res.data.currentQuestion);
+    const handleJoinAck = (res: { ok: boolean; error?: string; data?: JoinSuccessPayload }) => {
+      setJoining(false);
+      if (!res.ok || !res.data) {
+        setJoinError(res.error ?? 'No se pudo entrar al juego.');
+        return;
       }
-    );
+      playerIdRef.current = res.data.player.id;
+      setMe(res.data.player);
+      setGameState(res.data.gameState);
+      setCurrentQuestion(res.data.currentQuestion);
+    };
+
+    if (p2pClientRef.current) {
+      p2pClientRef.current.join(trimmed, handleJoinAck);
+    } else {
+      socketRef.current?.emit('join', { name: trimmed }, handleJoinAck);
+    }
   };
 
   const handleSubmitAnswer = (e: FormEvent) => {
@@ -213,16 +272,19 @@ export function PlayerView() {
 
     setSubmitting(true);
     setSubmitError(null);
-    socketRef.current?.emit(
-      'answer',
-      { answerText },
-      (res: { ok: boolean; error?: string }) => {
-        if (!res.ok) {
-          setSubmitting(false);
-          setSubmitError(res.error ?? 'Error al enviar respuesta.');
-        }
+
+    const handleAnswerAck = (res: { ok: boolean; error?: string }) => {
+      if (!res.ok) {
+        setSubmitting(false);
+        setSubmitError(res.error ?? 'Error al enviar respuesta.');
       }
-    );
+    };
+
+    if (p2pClientRef.current) {
+      p2pClientRef.current.answer(answerText, handleAnswerAck);
+    } else {
+      socketRef.current?.emit('answer', { answerText }, handleAnswerAck);
+    }
   };
 
   // 1. Pantalla de ingreso de nombre
@@ -255,6 +317,12 @@ export function PlayerView() {
             </div>
           )}
 
+          {connectionError && (
+            <div className="mb-5 p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-900 text-sm font-medium">
+              {connectionError}
+            </div>
+          )}
+
           <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-6 sm:p-8">
             <h1 className="font-display text-3xl font-extrabold text-slate-900 leading-tight">
               Únete al tablero
@@ -262,6 +330,12 @@ export function PlayerView() {
             <p className="text-slate-600 text-sm mt-2">
               Ingresa tu nombre para aparecer en la casilla de Salida de la pantalla principal.
             </p>
+
+            {roomCode && !p2pReady && !connectionError && (
+              <p className="mt-4 text-sm font-semibold text-indigo-600">
+                Conectando con la sala {roomCode}...
+              </p>
+            )}
 
             <form onSubmit={handleJoin} className="mt-6 space-y-4">
               <div>
@@ -294,10 +368,10 @@ export function PlayerView() {
 
               <button
                 type="submit"
-                disabled={joining}
+                disabled={joining || (Boolean(roomCode) && !p2pReady)}
                 className="w-full min-h-[52px] rounded-2xl bg-indigo-600 hover:bg-indigo-500 active:scale-[0.99] disabled:bg-slate-300 text-white font-display font-bold text-lg shadow-md shadow-indigo-600/20 transition-all cursor-pointer"
               >
-                {joining ? 'Entrando...' : 'Entrar al juego'}
+                {joining ? 'Entrando...' : roomCode && !p2pReady ? 'Conectando...' : 'Entrar al juego'}
               </button>
             </form>
           </div>
@@ -315,7 +389,6 @@ export function PlayerView() {
 
   return (
     <div className="min-h-dvh bg-slate-50 text-slate-900 flex flex-col">
-      {/* Cabecera compacta (<15% de alto móvil) */}
       <header className="sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-slate-200 px-4 h-14 flex items-center justify-between">
         <div className="flex items-center gap-2.5 min-w-0">
           <span
@@ -342,9 +415,13 @@ export function PlayerView() {
         </div>
       </header>
 
-      {/* Cuerpo principal móvil */}
       <main className="flex-1 flex flex-col max-w-xl w-full mx-auto p-4 pb-6 gap-4">
-        {/* Indicador visual de racha 0/3 para el BONUS */}
+        {connectionError && (
+          <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-900 text-sm font-medium">
+            {connectionError}
+          </div>
+        )}
+
         <section
           aria-label="Progreso de racha para bonus"
           className="bg-white rounded-2xl border border-slate-200 px-4 py-3 flex items-center justify-between gap-4"
@@ -376,7 +453,6 @@ export function PlayerView() {
           </div>
         </section>
 
-        {/* Estado: Sala de espera */}
         {status === 'WAITING' && (
           <section className="flex-1 flex flex-col justify-center">
             <div className="bg-white rounded-3xl border border-slate-200 p-6 text-center shadow-sm">
@@ -407,7 +483,6 @@ export function PlayerView() {
           </section>
         )}
 
-        {/* Estado: En pausa */}
         {status === 'PAUSED' && (
           <section className="flex-1 flex flex-col justify-center">
             <div className="bg-white rounded-3xl border border-amber-200 p-6 text-center shadow-sm">
@@ -422,7 +497,6 @@ export function PlayerView() {
           </section>
         )}
 
-        {/* Estado: Finalizado */}
         {status === 'FINISHED' && gameState?.winner && (
           <section className="flex-1 flex flex-col justify-center">
             <div className="bg-white rounded-3xl border border-amber-200 p-6 text-center shadow-sm">
@@ -471,7 +545,6 @@ export function PlayerView() {
           </section>
         )}
 
-        {/* Estado: Jugando */}
         {status === 'PLAYING' && (
           <AnimatePresence mode="wait">
             {feedback ? (
@@ -483,7 +556,6 @@ export function PlayerView() {
                 transition={{ duration: 0.18 }}
                 className="flex-1 flex flex-col justify-center gap-4"
               >
-                {/* Celebración especial de BONUS */}
                 {feedback.bonusTriggered && (
                   <motion.div
                     initial={{ y: -12, scale: 0.92 }}
@@ -583,7 +655,6 @@ export function PlayerView() {
                 transition={{ duration: 0.18 }}
                 className="flex-1 flex flex-col justify-between gap-4"
               >
-                {/* Tarjeta de pregunta abierta */}
                 <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-sm">
                   <div className="flex items-center gap-2 text-xs font-semibold text-slate-500">
                     <span>{currentQuestion.category}</span>
@@ -596,7 +667,6 @@ export function PlayerView() {
                   </h2>
                 </div>
 
-                {/* Zona ergonómica del pulgar para responder */}
                 <form onSubmit={handleSubmitAnswer} className="space-y-3 mt-auto">
                   <div>
                     <label htmlFor="answer-input" className="sr-only">
