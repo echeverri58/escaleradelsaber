@@ -7,6 +7,7 @@
     "dev": "tsx server.ts",
     "build": "vite build",
     "build:gh-pages": "vite build --base=./",
+    "build:docs": "vite build --base=./ --outDir docs",
     "start": "node server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
