@@ -1,11 +1,29 @@
-<div align="center">
+# Escalera en Vivo
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+Juego multijugador en tiempo real de Serpientes y Escaleras (30 casillas) para eventos y clases, con pantalla de proyección y controles en celular.
 
-  <h1>Built with AI Studio</h2>
+## Rutas
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+- `/` o `/proyeccion`: Pantalla del anfitrión para proyectar (tablero 6×5 de 30 casillas, código QR, ranking en vivo, panel "Va de primero", eventos y controles).
+- `/jugar`: Pantalla mobile-first para los jugadores desde su celular.
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+## Requisitos
 
-</div>
+- Node.js 22+ (ejecución nativa de `server.ts` en producción)
+
+## Desarrollo local
+
+```bash
+npm install
+npm run dev
+```
+
+Abre `http://localhost:3000` en el navegador para la pantalla de proyección. Si usas celulares en la misma red Wi-Fi, puedes editar la URL del QR desde el botón **Editar URL** e ingresar la IP local de tu computadora (por ejemplo, `http://192.168.1.50:3000/jugar`).
+
+## Producción (Render, Railway, Cloud Run, VPS)
+
+```bash
+npm install
+npm run build
+NODE_ENV=production npm start
+```

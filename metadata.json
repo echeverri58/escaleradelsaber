@@ -1,0 +1,6 @@
+{
+  "name": "Escalera en Vivo",
+  "description": "Juego multijugador en tiempo real de Serpientes y Escaleras con pantalla de proyección y controles en celular.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
