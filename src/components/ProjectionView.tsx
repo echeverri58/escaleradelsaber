@@ -313,7 +313,7 @@ export function ProjectionView() {
             <h1 className="font-display text-2xl font-extrabold tracking-tight text-white whitespace-nowrap leading-none">
               LA ESCALERA DEL SABER
             </h1>
-            <p className="text-xs text-slate-400 font-medium mt-1">
+            <p className="text-xs sm:text-sm text-amber-300 font-semibold mt-1">
               Creado por John Alexander Echeverry O.
             </p>
           </div>
@@ -978,6 +978,10 @@ export function ProjectionView() {
                   Reiniciar todo (salir todos)
                 </button>
               </div>
+
+              <p className="mt-6 text-xs text-slate-400 font-medium">
+                LA ESCALERA DEL SABER · Creado por John Alexander Echeverry O.
+              </p>
             </motion.div>
           </motion.div>
         )}

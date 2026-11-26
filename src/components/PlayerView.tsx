@@ -710,6 +710,9 @@ export function PlayerView() {
           </AnimatePresence>
         )}
       </main>
+      <footer className="pb-4 px-4 text-center text-[11px] text-slate-500 font-medium">
+        LA ESCALERA DEL SABER · Creado por John Alexander Echeverry O.
+      </footer>
     </div>
   );
 }
